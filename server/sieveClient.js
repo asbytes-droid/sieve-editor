@@ -1,14 +1,8 @@
+import net from 'node:net';
 import tls from 'node:tls';
 
-function tokenizeLines(buffer) {
-  return buffer
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-}
-
 function escapeQuoted(value) {
-  return value.replaceAll('"', '\\"');
+  return String(value).replaceAll('"', '\\"');
 }
 
 function parseStringToken(token) {
@@ -18,55 +12,132 @@ function parseStringToken(token) {
   return token;
 }
 
-export async function withSieveClient({ host, username, password, port = 4190 }, handler) {
-  const socket = tls.connect({ host, port, servername: host, rejectUnauthorized: true });
+function createLineReader(socket) {
   socket.setEncoding('utf8');
-
-  let dataBuffer = '';
+  let buffer = '';
+  const lines = [];
   const waiters = [];
 
-  const pushData = () => {
-    const lines = tokenizeLines(dataBuffer);
-    if (!lines.length) return;
-    dataBuffer = '';
-    while (waiters.length > 0) {
-      const waiter = waiters.shift();
-      waiter(lines);
+  socket.on('data', (chunk) => {
+    buffer += chunk;
+    let idx = buffer.indexOf('\n');
+    while (idx >= 0) {
+      const line = buffer.slice(0, idx).replace(/\r$/, '');
+      buffer = buffer.slice(idx + 1);
+      if (waiters.length > 0) {
+        waiters.shift()(line);
+      } else {
+        lines.push(line);
+      }
+      idx = buffer.indexOf('\n');
+    }
+  });
+
+  return {
+    nextLine() {
+      return new Promise((resolve) => {
+        if (lines.length > 0) {
+          resolve(lines.shift());
+          return;
+        }
+        waiters.push(resolve);
+      });
     }
   };
+}
 
-  const readResponse = () => new Promise((resolve) => waiters.push(resolve));
+async function readResponse(nextLine) {
+  const lines = [];
+  while (true) {
+    const line = (await nextLine()).trim();
+    if (!line) continue;
+    lines.push(line);
+    if (/^(OK|NO|BYE)(\s|$)/.test(line)) break;
+  }
+  return lines;
+}
 
-  socket.on('data', (chunk) => {
-    dataBuffer += chunk;
-    if (dataBuffer.includes('\nOK') || dataBuffer.includes('\nNO') || dataBuffer.includes('\nBYE')) {
-      pushData();
-    }
-  });
-
+async function connectManageSieve({ host, port, security }) {
+  const plainSocket = net.createConnection({ host, port });
   await new Promise((resolve, reject) => {
-    socket.once('secureConnect', resolve);
-    socket.once('error', reject);
+    plainSocket.once('connect', resolve);
+    plainSocket.once('error', reject);
   });
 
-  const greeting = await readResponse();
-  if (!greeting.join(' ').includes('OK')) throw new Error('ManageSieve greeting fehlgeschlagen.');
+  if (security === 'none') {
+    return plainSocket;
+  }
 
-  const auth = `AUTHENTICATE "PLAIN" "${escapeQuoted(Buffer.from(`\0${username}\0${password}`).toString('base64'))}"\r\n`;
-  socket.write(auth);
-  const authResponse = await readResponse();
-  if (authResponse.some((line) => line.startsWith('NO') || line.startsWith('BYE'))) {
-    throw new Error(`Authentifizierung fehlgeschlagen: ${authResponse.join(' ')}`);
+  if (security === 'tls') {
+    plainSocket.destroy();
+    const tlsSocket = tls.connect({ host, port, servername: host, rejectUnauthorized: true });
+    await new Promise((resolve, reject) => {
+      tlsSocket.once('secureConnect', resolve);
+      tlsSocket.once('error', reject);
+    });
+    return tlsSocket;
+  }
+
+  return plainSocket;
+}
+
+async function upgradeStartTls(socket, host, nextLine) {
+  const greetOrCaps = await readResponse(nextLine);
+  const supportsStartTls = greetOrCaps.some((line) => /"STARTTLS"/i.test(line) || /STARTTLS/i.test(line));
+  if (!supportsStartTls) {
+    throw new Error('Server bietet kein STARTTLS an. Bitte Sicherheit auf "TLS direkt" stellen.');
+  }
+
+  socket.write('STARTTLS\r\n');
+  const startTlsResponse = await readResponse(nextLine);
+  if (!startTlsResponse.some((line) => line.startsWith('OK'))) {
+    throw new Error(`STARTTLS fehlgeschlagen: ${startTlsResponse.join(' ')}`);
+  }
+
+  const tlsSocket = tls.connect({ socket, servername: host, rejectUnauthorized: true });
+  await new Promise((resolve, reject) => {
+    tlsSocket.once('secureConnect', resolve);
+    tlsSocket.once('error', reject);
+  });
+
+  return tlsSocket;
+}
+
+export async function withSieveClient(
+  { host, username, password, port = 4190, security = 'starttls' },
+  handler
+) {
+  let socket = await connectManageSieve({ host, port, security });
+  let reader = createLineReader(socket);
+
+  if (security === 'starttls') {
+    socket = await upgradeStartTls(socket, host, reader.nextLine);
+    reader = createLineReader(socket);
+    const greeting = await readResponse(reader.nextLine);
+    if (!greeting.some((line) => line.startsWith('OK'))) {
+      throw new Error(`ManageSieve greeting ungültig: ${greeting.join(' ')}`);
+    }
+  } else {
+    const greeting = await readResponse(reader.nextLine);
+    if (!greeting.some((line) => line.startsWith('OK'))) {
+      throw new Error(`ManageSieve greeting ungültig: ${greeting.join(' ')}`);
+    }
   }
 
   const send = async (command) => {
     socket.write(`${command}\r\n`);
-    const response = await readResponse();
-    if (response.some((line) => line.startsWith('NO') || line.startsWith('BYE'))) {
+    const response = await readResponse(reader.nextLine);
+    if (response.some((line) => /^(NO|BYE)(\s|$)/.test(line))) {
       throw new Error(response.join(' '));
     }
     return response;
   };
+
+  const token = Buffer.from(`\0${username}\0${password}`).toString('base64');
+  const authResponse = await send(`AUTHENTICATE "PLAIN" "${escapeQuoted(token)}"`);
+  if (!authResponse.some((line) => line.startsWith('OK'))) {
+    throw new Error(`Authentifizierung fehlgeschlagen: ${authResponse.join(' ')}`);
+  }
 
   try {
     return await handler({ send });
@@ -78,29 +149,24 @@ export async function withSieveClient({ host, username, password, port = 4190 },
 export async function loadActiveScript(credentials) {
   return withSieveClient(credentials, async ({ send }) => {
     const scripts = await send('LISTSCRIPTS');
-    const active = scripts.find((line) => line.includes('ACTIVE'));
+    const active = scripts.find((line) => /ACTIVE/.test(line));
     if (!active) return { script: '', rules: [] };
 
-    const nameToken = active.split(' ')[0];
-    const scriptName = parseStringToken(nameToken);
+    const scriptName = parseStringToken(active.split(' ')[0]);
     const content = await send(`GETSCRIPT "${escapeQuoted(scriptName)}"`);
+    const rawScript = content.filter((line) => !line.startsWith('OK')).join('\n');
 
-    const rawScript = content
-      .filter((line) => !line.startsWith('OK'))
-      .join('\n');
-
-    const rules = extractRules(rawScript);
-    return { scriptName, script: rawScript, rules };
+    return { scriptName, script: rawScript, rules: extractRules(rawScript) };
   });
 }
 
 export async function validateAndSaveScript(credentials, script) {
   return withSieveClient(credentials, async ({ send }) => {
     const scripts = await send('LISTSCRIPTS');
-    const active = scripts.find((line) => line.includes('ACTIVE'));
+    const active = scripts.find((line) => /ACTIVE/.test(line));
     const scriptName = active ? parseStringToken(active.split(' ')[0]) : 'main';
 
-    const escapedScript = script.replaceAll('"', '\\"');
+    const escapedScript = escapeQuoted(script);
     await send(`CHECKSCRIPT "${escapedScript}"`);
     await send(`PUTSCRIPT "${escapeQuoted(scriptName)}" "${escapedScript}"`);
     await send(`SETACTIVE "${escapeQuoted(scriptName)}"`);

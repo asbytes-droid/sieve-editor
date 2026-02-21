@@ -4,24 +4,30 @@ Eine kleine App, um Sieve-Regeln bei mailbox.org zu laden, visuell zu ergänzen 
 
 ## Warum kein Shell-Befehl?
 Die App verwendet **keine Shell-Execs** (`sieve-connect` etc.).
-Stattdessen spricht das Node-Backend direkt per TLS mit ManageSieve (Port 4190).
+Stattdessen spricht das Node-Backend direkt mit ManageSieve.
 
-## Gibt es ein gutes npm-Package dafür?
-Aktuell gibt es in der Praxis kein weit verbreitetes, gut gepflegtes Standard-Paket für ManageSieve wie z. B. bei IMAP/SMTP.
-Deshalb ist hier ein kleiner nativer Node-Client (`node:tls`) enthalten.
+## TLS/STARTTLS (wichtig)
+Der häufige Fehler
+`SSL routines:tls_get_more_records:packet length too long`
+entsteht typischerweise bei falscher Kombination aus Port und TLS-Modus.
+
+Daher unterstützt die App jetzt explizit:
+- `STARTTLS` (empfohlen)
+- `TLS direkt` (implicit TLS)
+- `keine TLS-Verschlüsselung` (nur für Tests)
+
+Empfohlen für mailbox.org: **Port 4190 + STARTTLS**.
 
 ## Features (MVP)
 - Verbindungseingaben:
   - Host (Default: `imap.mailbox.org`)
+  - Port (Default: `4190`)
+  - Sicherheit (STARTTLS/TLS direkt/none)
   - E-Mail-Adresse
   - Passwort / App-Passwort
 - Button **"Lade Sieve-Datei"**
 - Anzeige erkannter Regeln
-- Regel-Builder mit:
-  - Feld (from/subject/to)
-  - Operator (contains/is/matches)
-  - Aktion (fileinto/keep/discard)
-- Vorlagen-Dropdown (vordefinierte Filter)
+- Regel-Builder mit Vorlagen-Dropdown
 - Upload mit serverseitiger Validierung via `CHECKSCRIPT`
 
 ## Start
@@ -32,7 +38,3 @@ npm run dev
 
 - Frontend: `http://localhost:5173`
 - Backend API: `http://localhost:3000`
-
-## Hinweis
-Der ManageSieve-Protokollteil ist bewusst als MVP gehalten.
-Für Produktion sollte der Parser (Literal-Handling, Multi-Line, Quoting-Edgecases) robuster ausgebaut werden.

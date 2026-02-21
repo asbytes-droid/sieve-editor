@@ -8,10 +8,13 @@ app.use(express.json());
 
 function parseConnection(body) {
   const host = body.host || 'imap.mailbox.org';
+  const port = Number(body.port || 4190);
+  const security = body.security || 'starttls';
   const username = body.username;
   const password = body.password;
   if (!username || !password) throw new Error('Bitte E-Mail-Adresse und Passwort angeben.');
-  return { host, username, password };
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Ungültiger Port.');
+  return { host, port, security, username, password };
 }
 
 app.post('/api/sieve/load', async (req, res) => {

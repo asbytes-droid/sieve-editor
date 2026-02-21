@@ -10,6 +10,18 @@
           <input v-model="form.host" placeholder="imap.mailbox.org" />
         </label>
         <label>
+          Port
+          <input v-model.number="form.port" type="number" min="1" max="65535" />
+        </label>
+        <label>
+          Sicherheit
+          <select v-model="form.security">
+            <option value="starttls">STARTTLS (empfohlen)</option>
+            <option value="tls">TLS direkt (implicit)</option>
+            <option value="none">Keine TLS-Verschlüsselung</option>
+          </select>
+        </label>
+        <label>
           E-Mail-Adresse
           <input v-model="form.username" placeholder="name@mailbox.org" />
         </label>
@@ -87,6 +99,8 @@ import { computed, reactive, ref } from 'vue';
 
 const form = reactive({
   host: 'imap.mailbox.org',
+  port: 4190,
+  security: 'starttls',
   username: '',
   password: ''
 });
@@ -153,6 +167,9 @@ async function loadScript() {
     status.value = 'Sieve-Datei erfolgreich geladen.';
   } catch (error) {
     status.value = `Fehler: ${error.message}`;
+    if (String(error.message).includes('packet length too long')) {
+      status.value += ' → Prüfe Port/Sicherheit: meist 4190 + STARTTLS.';
+    }
   } finally {
     loading.value = false;
   }
@@ -180,6 +197,9 @@ async function saveScript() {
     status.value = 'Sieve-Datei validiert und hochgeladen.';
   } catch (error) {
     status.value = `Fehler: ${error.message}`;
+    if (String(error.message).includes('packet length too long')) {
+      status.value += ' → Prüfe Port/Sicherheit: meist 4190 + STARTTLS.';
+    }
   } finally {
     saving.value = false;
   }
