@@ -1,12 +1,12 @@
 <template>
   <main class="container">
-    <h1>Sieve Editor (mailbox.org)</h1>
+    <h1>Sieve-Editor (mailbox.org)</h1>
 
     <section class="card">
       <h2>Verbindung</h2>
       <div class="grid">
         <label>
-          IMAP / ManageSieve Host
+          IMAP Sieve Host
           <input v-model="form.host" placeholder="imap.mailbox.org" />
         </label>
         <label>
@@ -29,8 +29,10 @@
           Passwort / App-Passwort
           <input v-model="form.password" type="password" placeholder="••••••••" />
         </label>
+        <label>&nbsp;
+          <button :disabled="loading" @click="loadScript">Lade Sieve-Datei</button>
+        </label>
       </div>
-      <button :disabled="loading" @click="loadScript">Lade Sieve-Datei</button>
       <p v-if="status" class="status">{{ status }}</p>
     </section>
 
@@ -95,113 +97,132 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref } from 'vue';
+  import { computed, reactive, ref } from 'vue';
 
-const form = reactive({
-  host: 'imap.mailbox.org',
-  port: 4190,
-  security: 'starttls',
-  username: '',
-  password: ''
-});
+  const form = reactive({
+    host: 'imap.mailbox.org',
+    port: 4190,
+    security: 'starttls',
+    username: '',
+    password: ''
+  });
 
-const loading = ref(false);
-const loaded = ref(false);
-const saving = ref(false);
-const status = ref('');
-const scriptText = ref('');
-const rules = ref([]);
-const selectedTemplate = ref('');
+  const loading = ref(false);
+  const loaded = ref(false);
+  const saving = ref(false);
+  const status = ref('');
+  const scriptText = ref('');
+  const rules = ref([]);
+  const selectedTemplate = ref('');
 
-const draft = reactive({
-  field: 'from',
-  operator: ':contains',
-  value: '',
-  action: 'fileinto',
-  target: ''
-});
+  const draft = reactive({
+    field: 'from',
+    operator: ':contains',
+    value: '',
+    action: 'fileinto',
+    target: ''
+  });
 
-const templates = [
-  { name: 'Newsletter in News', field: 'from', operator: ':contains', value: 'newsletter', action: 'fileinto', target: 'INBOX/News' },
-  { name: 'Rechnungen in Finanzen', field: 'subject', operator: ':contains', value: 'Rechnung', action: 'fileinto', target: 'INBOX/Finanzen' },
-  { name: 'Spam verwerfen', field: 'subject', operator: ':contains', value: '[SPAM]', action: 'discard', target: '' }
-];
+  const templates = [
+    { name: 'Newsletter in News', field: 'from', operator: ':contains', value: 'newsletter', action: 'fileinto', target: 'INBOX/News' },
+    { name: 'Rechnungen in Finanzen', field: 'subject', operator: ':contains', value: 'Rechnung', action: 'fileinto', target: 'INBOX/Finanzen' },
+    { name: 'Spam verwerfen', field: 'subject', operator: ':contains', value: '[SPAM]', action: 'discard', target: '' }
+  ];
 
-const generatedRule = computed(() => {
-  const escaped = draft.value.replaceAll('"', '\\"');
-  const target = draft.target.replaceAll('"', '\\"');
-  let action = 'keep;';
-  if (draft.action === 'fileinto') action = `fileinto "${target}";`;
-  if (draft.action === 'discard') action = 'discard;';
+  const generatedRule = computed(() => {
+    const escaped = draft.value.replaceAll('"', '\\"');
+    const target = draft.target.replaceAll('"', '\\"');
+    let action = 'keep;';
+    if (draft.action === 'fileinto') action = `fileinto "${target}";`;
+    if (draft.action === 'discard') action = 'discard;';
 
-  return `if header ${draft.operator} "${draft.field}" "${escaped}" { ${action} }`;
-});
+    return `if header ${draft.operator} "${draft.field}" "${escaped}" { ${action} }`;
+  });
 
-const isDraftValid = computed(() => {
-  if (!draft.value.trim()) return false;
-  if (draft.action === 'fileinto' && !draft.target.trim()) return false;
-  return true;
-});
+  const isDraftValid = computed(() => {
+    if (!draft.value.trim()) return false;
+    if (draft.action === 'fileinto' && !draft.target.trim()) return false;
+    return true;
+  });
 
-function applyTemplate() {
-  const tpl = templates.find((t) => t.name === selectedTemplate.value);
-  if (!tpl) return;
-  Object.assign(draft, tpl);
-}
 
-async function loadScript() {
-  loading.value = true;
-  status.value = '';
-  try {
-    const res = await fetch('/api/sieve/load', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(form)
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Laden fehlgeschlagen');
-
-    scriptText.value = data.script;
-    rules.value = data.rules;
-    loaded.value = true;
-    status.value = 'Sieve-Datei erfolgreich geladen.';
-  } catch (error) {
-    status.value = `Fehler: ${error.message}`;
-    if (String(error.message).includes('packet length too long')) {
-      status.value += ' → Prüfe Port/Sicherheit: meist 4190 + STARTTLS.';
-    }
-  } finally {
-    loading.value = false;
+  async function parseApiResponse(res) {
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) return res.json();
+    const text = await res.text();
+    return { error: text || `HTTP ${res.status}` };
   }
-}
 
-function addRule() {
-  if (!isDraftValid.value) return;
-  const newRule = generatedRule.value;
-  scriptText.value += `\n${newRule}\n`;
-  rules.value.push({ label: 'Neu', raw: newRule });
-  status.value = 'Regel wurde lokal hinzugefügt. Bitte hochladen klicken.';
-}
-
-async function saveScript() {
-  saving.value = true;
-  status.value = '';
-  try {
-    const res = await fetch('/api/sieve/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...form, script: scriptText.value })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Upload fehlgeschlagen');
-    status.value = 'Sieve-Datei validiert und hochgeladen.';
-  } catch (error) {
-    status.value = `Fehler: ${error.message}`;
-    if (String(error.message).includes('packet length too long')) {
-      status.value += ' → Prüfe Port/Sicherheit: meist 4190 + STARTTLS.';
+  function toFriendlyError(error) {
+    const message = String(error?.message || error || 'Unbekannter Fehler');
+    if (message.includes('Failed to fetch')) {
+      return 'Backend nicht erreichbar. Läuft `npm run dev:server` auf Port 3000?';
     }
-  } finally {
-    saving.value = false;
+    if (message.includes('ECONNRESET')) {
+      return 'Verbindung wurde vom Server zurückgesetzt (ECONNRESET). Prüfe Host/Port/Sicherheit.';
+    }
+    return message;
   }
-}
+
+  function applyTemplate() {
+    const tpl = templates.find((t) => t.name === selectedTemplate.value);
+    if (!tpl) return;
+    Object.assign(draft, tpl);
+  }
+
+  async function loadScript() {
+    loading.value = true;
+    status.value = '';
+    try {
+      const res = await fetch('/api/sieve/load', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form)
+      });
+      const data = await parseApiResponse(res);
+      if (!res.ok) throw new Error(data.error || 'Laden fehlgeschlagen');
+
+      scriptText.value = data.script;
+      rules.value = data.rules;
+      loaded.value = true;
+      status.value = 'Sieve-Datei erfolgreich geladen.';
+    } catch (error) {
+      status.value = `Fehler: ${toFriendlyError(error)}`;
+      if (String(error.message).includes('packet length too long')) {
+        status.value += ' → Prüfe Port/Sicherheit: meist 4190 + STARTTLS.';
+      }
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  function addRule() {
+    if (!isDraftValid.value) return;
+    const newRule = generatedRule.value;
+    scriptText.value += `\n${newRule}\n`;
+    rules.value.push({ label: 'Neu', raw: newRule });
+    status.value = 'Regel wurde lokal hinzugefügt. Bitte hochladen klicken.';
+  }
+
+  async function saveScript() {
+    saving.value = true;
+    status.value = '';
+    try {
+      const res = await fetch('/api/sieve/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...form, script: scriptText.value })
+      });
+      const data = await parseApiResponse(res);
+      if (!res.ok) throw new Error(data.error || 'Upload fehlgeschlagen');
+      status.value = 'Sieve-Datei validiert und hochgeladen.';
+    } catch (error) {
+      status.value = `Fehler: ${toFriendlyError(error)}`;
+      if (String(error.message).includes('packet length too long')) {
+        status.value += ' → Prüfe Port/Sicherheit: meist 4190 + STARTTLS.';
+      }
+    } finally {
+      saving.value = false;
+    }
+  }
 </script>

@@ -2,23 +2,22 @@
 
 Eine kleine App, um Sieve-Regeln bei mailbox.org zu laden, visuell zu ergänzen und wieder hochzuladen.
 
+![Screenshot](screenshot.png?raw=true "Screenshot")
+
+
 ## Warum kein Shell-Befehl?
 Die App verwendet **keine Shell-Execs** (`sieve-connect` etc.).
 Stattdessen spricht das Node-Backend direkt mit ManageSieve.
 
 ## TLS/STARTTLS (wichtig)
-Der häufige Fehler
-`SSL routines:tls_get_more_records:packet length too long`
-entsteht typischerweise bei falscher Kombination aus Port und TLS-Modus.
-
-Daher unterstützt die App jetzt explizit:
+Die App unterstützt explizit:
 - `STARTTLS` (empfohlen)
 - `TLS direkt` (implicit TLS)
 - `keine TLS-Verschlüsselung` (nur für Tests)
 
 Empfohlen für mailbox.org: **Port 4190 + STARTTLS**.
 
-## Features (MVP)
+## Features
 - Verbindungseingaben:
   - Host (Default: `imap.mailbox.org`)
   - Port (Default: `4190`)
